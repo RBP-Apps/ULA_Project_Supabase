@@ -28,6 +28,7 @@ export interface User {
   entity: string
   mobile?: string
   avatar?: string
+  allowedPages?: string[]
 }
 
 export interface Contract {

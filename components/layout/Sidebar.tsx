@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import { navItems, navGroups } from '@/lib/nav-config'
 import { useAuth } from '@/lib/auth-context'
+import { useMyRole } from '@/components/ula/users/roles'
 
 interface SidebarProps {
   collapsed: boolean
@@ -23,7 +24,16 @@ interface SidebarProps {
 export function Sidebar({ collapsed, mobileOpen, onCloseMobile }: SidebarProps) {
   const pathname = usePathname()
   const { user, logout } = useAuth()
+  const myRole = useMyRole()
   const navRef = React.useRef<HTMLElement>(null)
+
+  const allowed = myRole?.allowedPages || user?.allowedPages
+
+  const isAllowed = (path: string) => {
+    if (!allowed || allowed.length === 0 || allowed.includes('*')) return true
+    if (path === '/dashboard') return true
+    return allowed.includes(path)
+  }
 
   const handleSidebarWheel = (e: React.WheelEvent<HTMLElement>) => {
     // Stop the wheel event from bubbling out to any parent container
@@ -87,7 +97,9 @@ export function Sidebar({ collapsed, mobileOpen, onCloseMobile }: SidebarProps) 
         {/* Nav Items Grouped */}
         <nav ref={navRef} className="side-nav">
           {navGroups.map((group) => {
-            const items = navItems.filter((n) => n.group === group)
+            const items = navItems.filter((n) => n.group === group && isAllowed(n.path))
+            if (items.length === 0) return null
+
             return (
               <div className="nav-group" key={group}>
                 {!collapsed && <p className="nav-label">{group}</p>}

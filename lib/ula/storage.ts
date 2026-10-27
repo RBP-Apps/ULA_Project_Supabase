@@ -1,11 +1,19 @@
 'use client'
 
-// Single localStorage access layer for the ULA modules.
-// Every collection is a JSON array of records with a unique `id`.
-// Components subscribe through useCollection(), so a write on one page
-// is reflected on every mounted page (and in other tabs via the storage event).
+// Unified data access and reactive state layer for the ULA modules.
+// Directly synchronized with Supabase PostgreSQL Database.
+// Maintains an in-memory & local cache for instant UI rendering,
+// and asynchronously persists every mutation to Supabase.
 
 import { useSyncExternalStore } from 'react'
+import {
+  fetchCollection,
+  upsertRecord,
+  upsertManyRecords,
+  deleteRecord,
+  fetchSettings,
+  saveSettings as saveSettingsToDb,
+} from '../supabase/repository'
 
 const PREFIX = 'surya-setu-ula-'
 
@@ -91,6 +99,14 @@ export function writeKey(name: string, value: unknown): boolean {
     localStorage.setItem(storageKey(name), JSON.stringify(value))
     lastError = null
     emit()
+
+    // If writing settings, persist to Supabase
+    if (name === 'settings' && value && typeof value === 'object') {
+      saveSettingsToDb(value as any).catch((err) =>
+        console.error('Error saving settings to Supabase:', err)
+      )
+    }
+
     return true
   } catch (e) {
     lastError =
@@ -116,12 +132,19 @@ export function getById<T extends { id: string }>(c: CollectionName, id: string)
   return getAll<T>(c).find((r) => r.id === id)
 }
 
-/** Insert or update by id. */
+/** Insert or update by id. Persists to Supabase PostgreSQL in background. */
 export function upsert<T extends { id: string }>(c: CollectionName, record: T): boolean {
   const all = getAll<T>(c)
   const exists = all.some((r) => r.id === record.id)
   const next = exists ? all.map((r) => (r.id === record.id ? record : r)) : [record, ...all]
-  return writeKey(COLLECTIONS[c], next)
+  const ok = writeKey(COLLECTIONS[c], next)
+
+  // Supabase PostgreSQL async persistence
+  upsertRecord(c, record).catch((err) =>
+    console.error(`Supabase persistence error for ${c}:`, err)
+  )
+
+  return ok
 }
 
 export function upsertMany<T extends { id: string }>(c: CollectionName, records: T[]): boolean {
@@ -131,42 +154,94 @@ export function upsertMany<T extends { id: string }>(c: CollectionName, records:
     if (byId.has(r.id)) byId.set(r.id, r)
     else fresh.push(r)
   }
-  return writeKey(COLLECTIONS[c], [...fresh, ...Array.from(byId.values())])
+  const next = [...fresh, ...Array.from(byId.values())]
+  const ok = writeKey(COLLECTIONS[c], next)
+
+  // Supabase PostgreSQL async persistence
+  upsertManyRecords(c, records).catch((err) =>
+    console.error(`Supabase batch persistence error for ${c}:`, err)
+  )
+
+  return ok
 }
 
-/** Apply `fn` to the record with this id and save it. */
+/** Apply `fn` to the record with this id and save it. Persists to Supabase PostgreSQL. */
 export function patch<T extends { id: string }>(c: CollectionName, id: string, fn: (r: T) => T): boolean {
   const all = getAll<T>(c)
   let found = false
+  let updatedRecord: T | null = null
   const next = all.map((r) => {
     if (r.id !== id) return r
     found = true
-    return fn(r)
+    updatedRecord = fn(r)
+    return updatedRecord
   })
-  return found ? writeKey(COLLECTIONS[c], next) : false
+
+  if (!found) return false
+  const ok = writeKey(COLLECTIONS[c], next)
+
+  if (updatedRecord) {
+    upsertRecord(c, updatedRecord).catch((err) =>
+      console.error(`Supabase patch error for ${c}:`, err)
+    )
+  }
+
+  return ok
 }
 
 /** Apply `fn` to every record whose id is in `ids`, in a single write. */
 export function patchMany<T extends { id: string }>(c: CollectionName, ids: string[], fn: (r: T) => T): boolean {
   const set = new Set(ids)
-  return writeKey(
-    COLLECTIONS[c],
-    getAll<T>(c).map((r) => (set.has(r.id) ? fn(r) : r))
-  )
+  const updatedRecords: T[] = []
+  const next = getAll<T>(c).map((r) => {
+    if (set.has(r.id)) {
+      const up = fn(r)
+      updatedRecords.push(up)
+      return up
+    }
+    return r
+  })
+
+  const ok = writeKey(COLLECTIONS[c], next)
+
+  if (updatedRecords.length > 0) {
+    upsertManyRecords(c, updatedRecords).catch((err) =>
+      console.error(`Supabase patchMany error for ${c}:`, err)
+    )
+  }
+
+  return ok
 }
 
 export function remove(c: CollectionName, id: string): boolean {
-  return writeKey(
+  const ok = writeKey(
     COLLECTIONS[c],
     getAll<{ id: string }>(c).filter((r) => r.id !== id)
   )
+
+  // Delete from Supabase PostgreSQL
+  deleteRecord(c, id).catch((err) =>
+    console.error(`Supabase delete error for ${c}:`, err)
+  )
+
+  return ok
 }
 
 export function removeWhere<T extends { id: string }>(c: CollectionName, pred: (r: T) => boolean): boolean {
-  return writeKey(
-    COLLECTIONS[c],
-    getAll<T>(c).filter((r) => !pred(r))
-  )
+  const all = getAll<T>(c)
+  const toDelete = all.filter(pred)
+  const toKeep = all.filter((r) => !pred(r))
+
+  const ok = writeKey(COLLECTIONS[c], toKeep)
+
+  // Delete removed records from Supabase
+  toDelete.forEach((r) => {
+    deleteRecord(c, r.id).catch((err) =>
+      console.error(`Supabase removeWhere error for ${c}:`, err)
+    )
+  })
+
+  return ok
 }
 
 /** Unique id: prefix + time + random suffix (never array positions). */
@@ -220,8 +295,13 @@ export function notifyChange() {
 export function logActivity(by: string, entity: string, entityId: string, action: string) {
   const all = getAll<{ id: string }>('activity')
   const entry = { id: newId('ACT'), at: new Date().toISOString(), by, entity, entityId, action }
-  // keep the log bounded so it never fills storage
+  // keep the log bounded locally
   writeKey(COLLECTIONS.activity, [entry, ...all].slice(0, 2000))
+
+  // Persist to Supabase
+  upsertRecord('activity', entry).catch((err) =>
+    console.error('Supabase activity log error:', err)
+  )
 }
 
 /** Remove every ULA key (used by Settings > reset). Files in IndexedDB are cleared separately. */
@@ -264,4 +344,55 @@ export function storageUsageKb(): number {
     /* ignore */
   }
   return Math.round((total * 2) / 1024)
+}
+
+// -------------------------------------------------------------
+// Automatic Synchronization with Supabase Database
+// -------------------------------------------------------------
+let syncInitiated = false
+
+export function purgeLocalDummyData() {
+  if (typeof window === 'undefined') return
+  try {
+    localStorage.removeItem('surya-setu-registered-users')
+  } catch (e) {
+    console.warn('Purge notice:', e)
+  }
+}
+
+export async function syncWithSupabase() {
+  if (typeof window === 'undefined' || syncInitiated) return
+  syncInitiated = true
+
+  // 1. Fetch & sync Settings
+  try {
+    const dbSettings = await fetchSettings()
+    if (dbSettings) {
+      writeKey('settings', dbSettings)
+    }
+  } catch (err) {
+    console.warn('Supabase settings sync error:', err)
+  }
+
+  // 2. Fetch & sync all 20 collections from Supabase Database
+  const collectionKeys = Object.keys(COLLECTIONS) as CollectionName[]
+  for (const c of collectionKeys) {
+    try {
+      const remoteRecords = await fetchCollection<{ id: string }>(c)
+      // Supabase is authoritative: mirror database records in state
+      if (Array.isArray(remoteRecords)) {
+        writeKey(COLLECTIONS[c], remoteRecords)
+      }
+    } catch (err) {
+      console.warn(`Supabase sync warning for collection ${c}:`, err)
+    }
+  }
+
+  emit()
+}
+
+// Trigger initial sync and purge on client mount
+if (typeof window !== 'undefined') {
+  purgeLocalDummyData()
+  syncWithSupabase()
 }

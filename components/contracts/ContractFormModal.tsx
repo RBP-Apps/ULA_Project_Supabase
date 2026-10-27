@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import { Contract } from '@/lib/types'
 import { addDays, complianceItems } from '@/lib/contracts-store'
+import { saveFile } from '@/lib/ula/files'
 
 interface ContractFormModalProps {
   initial: Contract
@@ -35,10 +36,16 @@ export function ContractFormModal({ initial, onClose, onSave }: ContractFormModa
     })
   }
 
-  const handleFileUpload = (key: keyof Contract, e: ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (key: keyof Contract, e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (file) {
-      setField(key, file.name)
+      try {
+        const ref = await saveFile(file, { folder: 'contracts' })
+        setField(key, ref.url || ref.id)
+      } catch (err) {
+        console.error('File upload failed', err)
+        setField(key, file.name)
+      }
     }
   }
 
@@ -265,7 +272,7 @@ export function ContractFormModal({ initial, onClose, onSave }: ContractFormModa
           <div className="form-section">
             <div className="form-section-title">
               <Shield className="w-4 h-4 text-teal-600" />
-              <h3>3. PBG & Agreement</h3>
+              <h3>3. PBG(Performance Bank Guarantee) & Agreement</h3>
             </div>
             <div className="form-grid">
               <label className="field">

@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useEffect, useState } from 'react'
-import { Save, Plus, Pencil, Trash2, Download, Upload, AlertTriangle, Database, Wand2 } from 'lucide-react'
+import { Save, Plus, Pencil, Trash2, Download, Upload, AlertTriangle, Database, Wand2, CloudUpload } from 'lucide-react'
 import {
   PageHeader,
   Tabs,
@@ -20,8 +20,9 @@ import {
   useUserName,
 } from '../ui'
 import { useIps, useWarehouses, useItems, useBomTemplates, useBeneficiaries, useWorkOrders, useDispatches, useStockMoves } from '@/lib/ula/data'
-import { upsert, remove, newId, logActivity, clearAllUlaData, exportAllUlaData, storageUsageKb, writeKey } from '@/lib/ula/storage'
+import { upsert, remove, newId, logActivity, clearAllUlaData, exportAllUlaData, storageUsageKb, writeKey, syncWithSupabase } from '@/lib/ula/storage'
 import { clearAllFiles } from '@/lib/ula/files'
+import { saveContract } from '@/lib/supabase/repository'
 import { useSettings, saveSettings, DEFAULT_SETTINGS, fmtInr, nowIso } from '@/lib/ula/workflow'
 import type { Settings, SlaConfig, InstallationPartner, Warehouse, ItemMaster, BomTemplate } from '@/lib/ula/types'
 
@@ -670,7 +671,24 @@ function ItemsTab() {
 function DataTab() {
   const user = useUserName()
   const [kb, setKb] = useState(0)
+  const [syncing, setSyncing] = useState(false)
   useEffect(() => setKb(storageUsageKb()), [])
+
+  const pushToSupabase = async () => {
+    setSyncing(true)
+    try {
+      await syncWithSupabase()
+      const contracts = JSON.parse(localStorage.getItem('surya-setu-contracts') || '[]')
+      for (const c of contracts) {
+        await saveContract(c)
+      }
+      toast('Supabase sync complete! All records are synchronized with database.', 'success')
+    } catch (e: any) {
+      toast(`Sync failed: ${e?.message || 'Unknown error'}`, 'error')
+    } finally {
+      setSyncing(false)
+    }
+  }
 
   const exportBackup = () => {
     const data = { exportedAt: nowIso(), exportedBy: user, ula: exportAllUlaData(), contracts: JSON.parse(localStorage.getItem('surya-setu-contracts') || '[]') }
@@ -714,11 +732,27 @@ function DataTab() {
   return (
     <div className="stack">
       <NoteBanner>
-        This phase stores data only in this browser (localStorage for records, IndexedDB for files). It is not shared between users or devices. Export a backup regularly.
+        Software is connected to Supabase PostgreSQL Database and Cloud Storage (bucket: ula-files). Mutations automatically sync with the cloud database.
       </NoteBanner>
-      <FormSection title="Storage" icon={Database}>
+      <FormSection title="Supabase Database & Cloud Storage" icon={Database}>
         <p style={{ fontSize: 12 }}>
-          Records currently use about <strong>{kb} KB</strong> of browser storage (typical limit ≈ 5 MB). Photos and documents are in IndexedDB and do not count toward this.
+          Your system is configured to save all lots, beneficiaries, work orders, purchase orders, dispatches, dockets, payments, CMC visits, and uploaded files to Supabase.
+        </p>
+        <div className="row" style={{ marginTop: 10 }}>
+          <button
+            type="button"
+            className="primary-btn"
+            disabled={syncing}
+            onClick={pushToSupabase}
+          >
+            <CloudUpload className="w-4 h-4" />
+            {syncing ? 'Synchronizing with Supabase...' : 'Synchronize Local Data to Supabase'}
+          </button>
+        </div>
+      </FormSection>
+      <FormSection title="Local Storage Cache" icon={Database}>
+        <p style={{ fontSize: 12 }}>
+          Local records currently use about <strong>{kb} KB</strong> of browser storage for instant offline previews. Photos and documents are uploaded to Supabase Storage.
         </p>
       </FormSection>
       <FormSection title="Backup and restore">
@@ -734,7 +768,7 @@ function DataTab() {
       </FormSection>
       <FormSection title="Danger zone">
         <button type="button" className="danger-btn" onClick={reset}>
-          <Trash2 className="w-4 h-4" /> Reset all ULA data
+          <Trash2 className="w-4 h-4" /> Reset all local ULA data
         </button>
       </FormSection>
     </div>

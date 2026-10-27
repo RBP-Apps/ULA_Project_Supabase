@@ -25,7 +25,7 @@ import { getStoredContracts, complianceItems } from '@/lib/contracts-store'
 import { Contract } from '@/lib/types'
 import { StatusPill } from '@/components/contracts/StatusPill'
 import { useAuth } from '@/lib/auth-context'
-import { useBeneficiaries, useLots, useLotSummaries, usePurchaseOrders } from '@/lib/ula/data'
+import { useBeneficiaries, useLots, useLotSummaries, usePurchaseOrders, useContracts } from '@/lib/ula/data'
 import { useCollection } from '@/lib/ula/storage'
 import type { PaymentFollowUp, RoleAssignment, UlaRole } from '@/lib/ula/types'
 import {
@@ -55,7 +55,7 @@ const TRACK: { label: string; stages: Stage[]; href: string }[] = [
 ]
 
 export function DashboardView() {
-  const [contracts, setContracts] = useState<Contract[]>([])
+  const contracts = useContracts()
   const { user } = useAuth()
   const bens = useBeneficiaries()
   const lots = useLots()
@@ -74,10 +74,6 @@ export function DashboardView() {
   const [bucket, setBucket] = useState<QueueBucket>('overdue')
   const [pkgFilter, setPkgFilter] = useState('')
   const [districtFilter, setDistrictFilter] = useState('')
-
-  useEffect(() => {
-    setContracts(getStoredContracts())
-  }, [])
 
   // ---------------- existing contract metrics (preserved) ----------------
   const totalContracts = contracts.length
@@ -693,7 +689,7 @@ export function DashboardView() {
         </Link>
 
         <Link href="/contract-compliance" className="queue-count red">
-          <span>Pending PBG & Agreements</span>
+          <span>Pending PBG(Performance Bank Guarantee) & Agreements</span>
           <strong>{pendingExecutionCount}</strong>
           <small>
             <FileText className="w-3.5 h-3.5" />

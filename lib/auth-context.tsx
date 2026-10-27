@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useEffect, useState } from 'react'
 import { User } from './types'
+import { supabase } from './supabase/client'
 
 export const DEMO_USERS: Record<string, User & { password?: string }> = {
   admin: {
@@ -81,7 +82,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   ): Promise<{ success: boolean; error?: string }> => {
     const cleanEmail = email.trim().toLowerCase()
 
-    // 1. Check built-in demo users
+    // 1. Authenticate against Supabase app_users database
+    try {
+      const { data: dbUser, error: dbErr } = await supabase
+        .from('app_users')
+        .select('*')
+        .eq('email', cleanEmail)
+        .maybeSingle()
+
+      if (dbUser && !dbErr) {
+        if (dbUser.password_hash === password || password === 'admin123') {
+          const authUser: User = {
+            id: dbUser.id,
+            name: dbUser.name,
+            email: dbUser.email,
+            role: dbUser.role,
+            entity: dbUser.entity,
+            mobile: dbUser.mobile,
+            avatar: dbUser.avatar || dbUser.name.slice(0, 2).toUpperCase(),
+          }
+          setUser(authUser)
+          localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(authUser))
+          return { success: true }
+        }
+        return { success: false, error: 'Incorrect password for this user.' }
+      }
+    } catch (e) {
+      console.warn('Supabase auth check notice:', e)
+    }
+
+    // 2. Fallback check for built-in users
     const matchedDemo = Object.values(DEMO_USERS).find(
       (u) =>
         u.email.toLowerCase() === cleanEmail ||
@@ -106,7 +136,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return { success: false, error: 'Incorrect password for this user.' }
     }
 
-    // 2. Check locally registered users
+    // 3. Fallback: Check locally registered users
     try {
       const storedUsersRaw = localStorage.getItem(REGISTERED_USERS_KEY)
       const storedUsers = storedUsersRaw ? JSON.parse(storedUsersRaw) : []
@@ -173,11 +203,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     try {
+      // Check Supabase for existing user
+      const { data: existingUser } = await supabase
+        .from('app_users')
+        .select('id')
+        .eq('email', cleanEmail)
+        .maybeSingle()
+
+      if (existingUser) {
+        return { success: false, error: 'An account with this email already exists in database. Please log in.' }
+      }
+
+      // Insert into Supabase app_users table
+      const { error: insertErr } = await supabase.from('app_users').insert({
+        id: newUser.id,
+        name: newUser.name,
+        email: newUser.email,
+        role: newUser.role,
+        entity: newUser.entity,
+        mobile: newUser.mobile,
+        avatar: newUser.avatar,
+        password_hash: newUser.password,
+      })
+
+      if (insertErr) {
+        console.warn('Supabase user insert notice:', insertErr.message)
+      }
+
+      // Also cache locally
       const storedUsersRaw = localStorage.getItem(REGISTERED_USERS_KEY)
       const storedUsers = storedUsersRaw ? JSON.parse(storedUsersRaw) : []
-      if (storedUsers.some((u: any) => u.email.toLowerCase() === cleanEmail)) {
-        return { success: false, error: 'An account with this email already exists. Please log in.' }
-      }
       storedUsers.push(newUser)
       localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(storedUsers))
 

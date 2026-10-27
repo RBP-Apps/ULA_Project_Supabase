@@ -23,21 +23,18 @@ import {
   blankContract,
   complianceItems,
 } from '@/lib/contracts-store'
+import { useContracts } from '@/lib/ula/data'
 import { StatusPill } from './StatusPill'
 import { ContractFormModal } from './ContractFormModal'
 import { ComplianceDrawer } from './ComplianceDrawer'
 
 export function ContractList() {
-  const [contracts, setContracts] = useState<Contract[]>([])
+  const contracts = useContracts()
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('All')
   const [formModalOpen, setFormModalOpen] = useState(false)
   const [activeContract, setActiveContract] = useState<Contract | null>(null)
   const [complianceDrawerOpen, setComplianceDrawerOpen] = useState(false)
-
-  useEffect(() => {
-    setContracts(getStoredContracts())
-  }, [])
 
   const filteredContracts = contracts.filter((c) => {
     const matchesSearch =
@@ -63,15 +60,13 @@ export function ContractList() {
   ).length
 
   const handleSaveContract = (saved: Contract) => {
-    const updated = saveStoredContract(saved)
-    setContracts(updated)
+    saveStoredContract(saved)
     setFormModalOpen(false)
   }
 
   const handleDeleteContract = (id: string, name: string) => {
     if (confirm(`Are you sure you want to delete contract "${name}"?`)) {
-      const updated = deleteStoredContract(id)
-      setContracts(updated)
+      deleteStoredContract(id)
     }
   }
 

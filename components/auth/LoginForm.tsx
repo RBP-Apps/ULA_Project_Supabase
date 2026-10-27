@@ -10,15 +10,13 @@ import {
   EyeOff,
   ChevronRight,
   Shield,
-  UserCheck,
   AlertCircle,
-  Sparkles,
 } from 'lucide-react'
-import { useAuth, DEMO_USERS } from '@/lib/auth-context'
+import { useAuth } from '@/lib/auth-context'
 
 export function LoginForm() {
   const router = useRouter()
-  const { login, demoLogin } = useAuth()
+  const { login } = useAuth()
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -44,11 +42,6 @@ export function LoginForm() {
     } else {
       setError(result.error || 'Failed to sign in.')
     }
-  }
-
-  const handleQuickDemo = (type: 'admin' | 'officer' | 'vendor') => {
-    demoLogin(type)
-    router.push('/dashboard')
   }
 
   return (
@@ -150,52 +143,6 @@ export function LoginForm() {
             <ChevronRight className="w-4 h-4" />
           </button>
         </form>
-
-        {/* Quick Demo Logins Section */}
-        <div className="auth-demo-divider">
-          <span>or 1-click instant demo access</span>
-        </div>
-
-        <div className="demo-accounts-grid">
-          <button
-            type="button"
-            className="demo-account-btn"
-            onClick={() => handleQuickDemo('admin')}
-          >
-            <div className="demo-badge admin">Admin</div>
-            <div className="demo-info">
-              <strong>Ankit Sharma</strong>
-              <span>admin@suryasetu.gov.in</span>
-            </div>
-            <Sparkles className="w-3.5 h-3.5 text-teal-600" />
-          </button>
-
-          <button
-            type="button"
-            className="demo-account-btn"
-            onClick={() => handleQuickDemo('officer')}
-          >
-            <div className="demo-badge cspdcl">CSPDCL</div>
-            <div className="demo-info">
-              <strong>Ramesh Verma (SE)</strong>
-              <span>verma.cspdcl@gov.in</span>
-            </div>
-            <UserCheck className="w-3.5 h-3.5 text-blue-600" />
-          </button>
-
-          <button
-            type="button"
-            className="demo-account-btn"
-            onClick={() => handleQuickDemo('vendor')}
-          >
-            <div className="demo-badge partner">Partner</div>
-            <div className="demo-info">
-              <strong>Vikas Deshmukh</strong>
-              <span>vikas@rbprotomag.in</span>
-            </div>
-            <Shield className="w-3.5 h-3.5 text-amber-600" />
-          </button>
-        </div>
 
         {/* Switch to Signup */}
         <div className="auth-switch-foot">

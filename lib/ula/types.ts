@@ -2,11 +2,12 @@
 // Beneficiary is the unit of record; Lot is the unit of time and billing.
 
 export interface FileRef {
-  id: string // key in IndexedDB file store
+  id: string // key or storage path
   name: string
   size: number
   type: string
   uploadedAt: string // ISO
+  url?: string // Supabase storage public URL
   lat?: number
   lng?: number
   capturedVia?: 'camera' | 'upload'
@@ -455,6 +456,7 @@ export interface RoleAssignment {
   role: UlaRole
   ipId?: string
   active: boolean
+  allowedPages?: string[]
 }
 
 export interface ActivityLog {

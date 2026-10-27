@@ -1,4 +1,12 @@
 import { Contract, ComplianceMilestone } from './types'
+import { saveContract, deleteContract, fetchContracts } from './supabase/repository'
+
+// Forward declaration / lazy notify
+function notifyStorageChange() {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('storage'))
+  }
+}
 
 export function addDays(date: string, days: number): string {
   if (!date) return ''
@@ -116,6 +124,12 @@ export function saveStoredContract(contract: Contract): Contract[] {
       console.error('Error saving contract to localStorage', e)
     }
   }
+
+  // Persist to Supabase PostgreSQL database
+  saveContract(contract)
+    .then(() => notifyStorageChange())
+    .catch((err) => console.error('Error saving contract to Supabase:', err))
+
   return updated
 }
 
@@ -129,7 +143,25 @@ export function deleteStoredContract(id: string): Contract[] {
       console.error('Error deleting contract from localStorage', e)
     }
   }
+
+  // Delete from Supabase PostgreSQL database
+  deleteContract(id)
+    .then(() => notifyStorageChange())
+    .catch((err) => console.error('Error deleting contract from Supabase:', err))
+
   return updated
+}
+
+// Initial background sync with Supabase PostgreSQL
+if (typeof window !== 'undefined') {
+  fetchContracts()
+    .then((dbContracts) => {
+      if (Array.isArray(dbContracts)) {
+        localStorage.setItem(STORAGE_KEY_CONTRACTS, JSON.stringify(dbContracts))
+        notifyStorageChange()
+      }
+    })
+    .catch((e) => console.warn('Supabase contract initial fetch warning:', e))
 }
 
 export function complianceItems(c: Contract): ComplianceMilestone[] {

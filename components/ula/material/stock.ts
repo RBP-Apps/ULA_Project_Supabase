@@ -1,19 +1,5 @@
 'use client'
 
-// Stock and BOM helpers for Material Planning & Purchase and Dispatch.
-// Pure functions over stored records; other modules may import them read-only.
-//
-// Exports:
-//   stockBalance(moves, itemCode?, warehouseId?)   -> net qty from StockMoves (optionally filtered)
-//   balanceByItemWarehouse(moves)                  -> Map<'item|warehouse', qty>
-//   activeSites(bens, lotId?)                      -> beneficiaries not 'Dropped' (optionally of one lot)
-//   bomForSites(sites, boms)                       -> { lines: {itemCode, qty}[], missingKw: number[] }
-//   dispatchedQtyForLot(moves, dispatches, lotId)  -> Map<itemCode, qty> already issued to the lot
-//   openPoQty(pos, itemCode, lotId?)               -> qty on open POs (not Received / Cancelled)
-//   lotBomRows(...)                                -> required / dispatched / stock / on order / shortfall per item
-//   moduleQtyPerSite(kw, boms, items)              -> module count per site from the kW template
-//   isOpenPo(po)                                   -> PO still awaiting GRN
-//   contractDispatchGate(contract, today)          -> list of failed Contract & Compliance conditions
 
 import type { Beneficiary, BomTemplate, Dispatch, ItemMaster, PurchaseOrder, StockMove } from '@/lib/ula/types'
 import type { Contract } from '@/lib/types'
