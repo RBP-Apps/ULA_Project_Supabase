@@ -93,7 +93,13 @@ export async function fetchCollection<T>(collection: string): Promise<T[]> {
       return []
     }
     if (!data) return []
-    return data.map((row) => fromDatabaseRecord<T>(row))
+    return data.map((row) => {
+      const rec = fromDatabaseRecord<T>(row) as any
+      if (collection === 'items' && rec.code && !rec.id) {
+        rec.id = rec.code
+      }
+      return rec
+    })
   } catch (err) {
     console.warn(`Exception fetching ${collection}:`, err)
     return []
@@ -109,11 +115,17 @@ export async function upsertRecord<T extends { id: string }>(
 
   try {
     const dbRecord = toDatabaseRecord(record)
-    // For item_masters, primary key is 'code'
-    if (collection === 'items' && !dbRecord.code && record.id) {
-      dbRecord.code = record.id
+    // For item_masters, primary key is 'code' and table has no 'id' column
+    if (collection === 'items') {
+      if (!dbRecord.code && record.id) {
+        dbRecord.code = record.id
+      }
+      delete dbRecord.id
     }
-    let { error } = await supabase.from(table).upsert(dbRecord)
+    let { error } = collection === 'items'
+      ? await supabase.from(table).upsert(dbRecord, { onConflict: 'code' })
+      : await supabase.from(table).upsert(dbRecord)
+
     if (error && error.message?.includes('allowed_pages')) {
       const { allowed_pages, ...cleanRecord } = dbRecord
       const retry = await supabase.from(table).upsert(cleanRecord)
@@ -140,10 +152,16 @@ export async function upsertManyRecords<T extends { id: string }>(
   try {
     const dbRecords = records.map((r) => {
       const rec = toDatabaseRecord(r)
-      if (collection === 'items' && !rec.code && r.id) rec.code = r.id
+      if (collection === 'items') {
+        if (!rec.code && r.id) rec.code = r.id
+        delete rec.id
+      }
       return rec
     })
-    const { error } = await supabase.from(table).upsert(dbRecords)
+    const { error } = collection === 'items'
+      ? await supabase.from(table).upsert(dbRecords, { onConflict: 'code' })
+      : await supabase.from(table).upsert(dbRecords)
+
     if (error) {
       console.error(`Error batch saving to ${table} in Supabase:`, error.message)
       return false
@@ -208,7 +226,13 @@ export async function fetchSettings(): Promise<Settings | null> {
       .maybeSingle()
 
     if (error || !data) return null
-    return fromDatabaseRecord<Settings>(data)
+    const res = fromDatabaseRecord<Settings>(data)
+    res.rateCard = Array.isArray(res.rateCard) ? res.rateCard : []
+    res.districts = Array.isArray(res.districts) ? res.districts : []
+    res.circles = Array.isArray(res.circles) ? res.circles : []
+    res.divisions = Array.isArray(res.divisions) ? res.divisions : []
+    res.sla = res.sla && typeof res.sla === 'object' ? res.sla : ({} as any)
+    return res
   } catch (err) {
     console.warn('Exception fetching settings from Supabase:', err)
     return null
@@ -217,11 +241,21 @@ export async function fetchSettings(): Promise<Settings | null> {
 
 export async function saveSettings(settings: Settings): Promise<boolean> {
   try {
-    const dbRecord = {
+    const rawRecord = toDatabaseRecord(settings)
+    const dbRecord: Record<string, any> = {
       id: 'default',
-      ...toDatabaseRecord(settings),
+      rate_card: rawRecord.rate_card || [],
+      sla: rawRecord.sla || {},
+      districts: Array.isArray(rawRecord.districts) ? rawRecord.districts : [],
+      circles: Array.isArray(rawRecord.circles) ? rawRecord.circles : [],
+      divisions: Array.isArray(rawRecord.divisions) ? rawRecord.divisions : [],
+      cmc_share_percent: Number(rawRecord.cmc_share_percent) || 20,
+      min_pr_commissioning: Number(rawRecord.min_pr_commissioning) || 75,
+      min_cuf_cmc: Number(rawRecord.min_cuf_cmc) || 19,
+      photo_policy: rawRecord.photo_policy || 'strict',
+      updated_at: new Date().toISOString(),
     }
-    const { error } = await supabase.from('app_settings').upsert(dbRecord)
+    const { error } = await supabase.from('app_settings').upsert(dbRecord, { onConflict: 'id' })
     if (error) {
       console.error('Error saving settings to Supabase:', error.message)
       return false

@@ -14,6 +14,7 @@ import type {
 } from './types'
 import type { Contract } from '../types'
 import { readKey, writeKey, useKey } from './storage'
+import { saveSettings as saveSettingsToDb } from '../supabase/repository'
 
 // ---------------- dates ----------------
 
@@ -169,6 +170,11 @@ export function getSettings(): Settings {
 
 export function saveSettings(s: Settings): boolean {
   return writeKey('settings', s)
+}
+
+export async function saveSettingsAsync(s: Settings): Promise<boolean> {
+  writeKey('settings', s)
+  return await saveSettingsToDb(s)
 }
 
 export function useSettings(): Settings {

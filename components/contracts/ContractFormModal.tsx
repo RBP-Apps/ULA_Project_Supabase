@@ -388,7 +388,7 @@ export function ContractFormModal({ initial, onClose, onSave }: ContractFormModa
           <div className="form-section">
             <div className="form-section-title">
               <Layers className="w-4 h-4 text-teal-600" />
-              <h3>4. GTP, Drawings & Insurance</h3>
+              <h3>4. GTP(General Technical Particulars), Drawings & Insurance</h3>
             </div>
             <div className="form-grid">
               <label className="field">

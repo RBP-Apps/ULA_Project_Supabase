@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useEffect, useState } from 'react'
-import { Save, Plus, Pencil, Trash2, Download, Upload, AlertTriangle, Database, Wand2, CloudUpload } from 'lucide-react'
+import { Save, Plus, Pencil, Trash2, Download, Upload, AlertTriangle, Database, Wand2, CloudUpload, Loader2, RefreshCw } from 'lucide-react'
 import {
   PageHeader,
   Tabs,
@@ -20,10 +20,10 @@ import {
   useUserName,
 } from '../ui'
 import { useIps, useWarehouses, useItems, useBomTemplates, useBeneficiaries, useWorkOrders, useDispatches, useStockMoves } from '@/lib/ula/data'
-import { upsert, remove, newId, logActivity, clearAllUlaData, exportAllUlaData, storageUsageKb, writeKey, syncWithSupabase } from '@/lib/ula/storage'
+import { upsert, upsertAsync, upsertMany, remove, removeAsync, newId, logActivity, clearAllUlaData, exportAllUlaData, storageUsageKb, writeKey, syncWithSupabase, pushAllLocalDataToSupabase } from '@/lib/ula/storage'
 import { clearAllFiles } from '@/lib/ula/files'
-import { saveContract } from '@/lib/supabase/repository'
-import { useSettings, saveSettings, DEFAULT_SETTINGS, fmtInr, nowIso } from '@/lib/ula/workflow'
+import { saveContract, upsertManyRecords } from '@/lib/supabase/repository'
+import { useSettings, saveSettings, saveSettingsAsync, DEFAULT_SETTINGS, fmtInr, nowIso } from '@/lib/ula/workflow'
 import type { Settings, SlaConfig, InstallationPartner, Warehouse, ItemMaster, BomTemplate } from '@/lib/ula/types'
 
 const TABS = ['General & SLA', 'Areas', 'Installation Partners', 'Warehouses', 'Items & BOM', 'Data & Backup'] as const
@@ -71,9 +71,10 @@ function GeneralTab() {
   const settings = useSettings()
   const user = useUserName()
   const [s, setS] = useState<Settings>(settings)
+  const [saving, setSaving] = useState(false)
   useEffect(() => setS(settings), [settings])
 
-  const save = () => {
+  const save = async () => {
     if (s.rateCard.some((r) => !(r.kw > 0) || !(r.rate > 0))) {
       toast('Every rate card row needs kW and rate greater than 0.', 'error')
       return
@@ -86,7 +87,21 @@ function GeneralTab() {
       toast('SLA values must be zero or more.', 'error')
       return
     }
-    if (reportSave(saveSettings(s), 'Settings saved')) logActivity(user, 'Settings', 'settings', 'General settings updated')
+
+    setSaving(true)
+    try {
+      const ok = await saveSettingsAsync(s)
+      if (ok) {
+        toast('Settings saved successfully to database!', 'success')
+        logActivity(user, 'Settings', 'settings', 'General settings updated')
+      } else {
+        toast('Settings saved locally, but database sync returned an error.', 'error')
+      }
+    } catch (e: any) {
+      toast(`Save error: ${e?.message || 'Unknown error'}`, 'error')
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -136,8 +151,9 @@ function GeneralTab() {
         <button type="button" className="secondary-btn" onClick={() => confirmAction('Reset rate card, SLAs and thresholds to tender defaults?') && setS({ ...DEFAULT_SETTINGS, districts: s.districts, circles: s.circles, divisions: s.divisions })}>
           Reset to tender defaults
         </button>
-        <button type="button" className="primary-btn" onClick={save}>
-          <Save className="w-4 h-4" /> Save settings
+        <button type="button" className="primary-btn" disabled={saving} onClick={save}>
+          {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+          {saving ? 'Saving to Database...' : 'Save settings'}
         </button>
       </div>
     </div>
@@ -184,11 +200,29 @@ function ListEditor({ title, values, onChange }: { title: string; values: string
 function AreasTab() {
   const settings = useSettings()
   const user = useUserName()
-  const update = (patchS: Partial<Settings>) => {
-    if (reportSave(saveSettings({ ...settings, ...patchS }), 'Saved')) logActivity(user, 'Settings', 'areas', 'Area masters updated')
+  const [saving, setSaving] = useState(false)
+
+  const update = async (patchS: Partial<Settings>) => {
+    const next = { ...settings, ...patchS }
+    setSaving(true)
+    try {
+      const ok = await saveSettingsAsync(next)
+      if (ok) {
+        toast('Area masters saved to database!', 'success')
+        logActivity(user, 'Settings', 'areas', 'Area masters updated')
+      } else {
+        toast('Saved locally, but failed to persist to database.', 'error')
+      }
+    } catch (e: any) {
+      toast(`Save error: ${e?.message || 'Unknown error'}`, 'error')
+    } finally {
+      setSaving(false)
+    }
   }
+
   return (
     <div className="stack">
+      {saving && <span className="muted" style={{ fontSize: 11 }}>Saving areas to database...</span>}
       <ListEditor title="Districts" values={settings.districts} onChange={(v) => update({ districts: v })} />
       <ListEditor title="Circles" values={settings.circles} onChange={(v) => update({ circles: v })} />
       <ListEditor title="Divisions" values={settings.divisions} onChange={(v) => update({ divisions: v })} />
@@ -205,24 +239,50 @@ function IpTab() {
   const settings = useSettings()
   const user = useUserName()
   const [edit, setEdit] = useState<InstallationPartner | null>(null)
+  const [saving, setSaving] = useState(false)
 
   const blank = (): InstallationPartner => ({ id: '', name: '', contactPerson: '', mobile: '', email: '', districts: [], ratePerKw: 0, active: true, createdAt: '' })
 
-  const save = (ip: InstallationPartner) => {
+  const save = async (ip: InstallationPartner) => {
     if (!ip.name.trim()) return toast('IP name is required', 'error')
     if (!/^\d{10}$/.test(ip.mobile.replace(/\D/g, '').slice(-10))) return toast('Enter a 10-digit mobile number', 'error')
     if (ips.some((x) => x.id !== ip.id && x.name.trim().toLowerCase() === ip.name.trim().toLowerCase())) return toast('An IP with this name already exists', 'error')
     const saved = { ...ip, id: ip.id || newId('IP'), createdAt: ip.createdAt || nowIso() }
-    if (reportSave(upsert('ips', saved), `${saved.name} saved`)) {
-      logActivity(user, 'IP', saved.id, ip.id ? 'IP updated' : 'IP onboarded')
-      setEdit(null)
+
+    setSaving(true)
+    try {
+      const ok = await upsertAsync('ips', saved)
+      if (ok) {
+        toast(`${saved.name} saved to database!`, 'success')
+        logActivity(user, 'IP', saved.id, ip.id ? 'IP updated' : 'IP onboarded')
+        setEdit(null)
+      } else {
+        toast(`${saved.name} saved locally, but database sync failed.`, 'error')
+        setEdit(null)
+      }
+    } catch (e: any) {
+      toast(`Save error: ${e?.message || 'Unknown error'}`, 'error')
+    } finally {
+      setSaving(false)
     }
   }
 
-  const del = (ip: InstallationPartner) => {
+  const del = async (ip: InstallationPartner) => {
     const used = bens.some((b) => b.ipId === ip.id) || wos.some((w) => w.ipId === ip.id)
     if (used) return toast(`${ip.name} has work orders — mark it inactive instead of deleting.`, 'error')
-    if (confirmAction(`Delete ${ip.name}?`) && reportSave(remove('ips', ip.id), 'Deleted')) logActivity(user, 'IP', ip.id, 'IP deleted')
+    if (!confirmAction(`Delete ${ip.name}?`)) return
+
+    try {
+      const ok = await removeAsync('ips', ip.id)
+      if (ok) {
+        toast(`${ip.name} deleted from database!`, 'success')
+        logActivity(user, 'IP', ip.id, 'IP deleted')
+      } else {
+        toast(`Deleted locally, but database delete failed.`, 'error')
+      }
+    } catch (e: any) {
+      toast(`Delete failed: ${e?.message || 'Unknown error'}`, 'error')
+    }
   }
 
   return (
@@ -291,8 +351,9 @@ function IpTab() {
               <button type="button" className="secondary-btn" onClick={() => setEdit(null)}>
                 Cancel
               </button>
-              <button type="submit" className="primary-btn">
-                <Save className="w-4 h-4" /> Save
+              <button type="submit" className="primary-btn" disabled={saving}>
+                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                {saving ? 'Saving...' : 'Save'}
               </button>
             </>
           }
@@ -331,19 +392,45 @@ function WarehouseTab() {
   const settings = useSettings()
   const user = useUserName()
   const [edit, setEdit] = useState<Warehouse | null>(null)
+  const [saving, setSaving] = useState(false)
 
-  const save = (w: Warehouse) => {
+  const save = async (w: Warehouse) => {
     if (!w.name.trim()) return toast('Warehouse name is required', 'error')
     if (w.kind === 'District' && !w.district.trim()) return toast('District store needs a district', 'error')
     const saved = { ...w, id: w.id || newId('WH') }
-    if (reportSave(upsert('warehouses', saved), `${saved.name} saved`)) {
-      logActivity(user, 'Warehouse', saved.id, w.id ? 'Warehouse updated' : 'Warehouse created')
-      setEdit(null)
+
+    setSaving(true)
+    try {
+      const ok = await upsertAsync('warehouses', saved)
+      if (ok) {
+        toast(`${saved.name} saved to database!`, 'success')
+        logActivity(user, 'Warehouse', saved.id, w.id ? 'Warehouse updated' : 'Warehouse created')
+        setEdit(null)
+      } else {
+        toast(`${saved.name} saved locally, but database sync failed.`, 'error')
+        setEdit(null)
+      }
+    } catch (e: any) {
+      toast(`Save error: ${e?.message || 'Unknown error'}`, 'error')
+    } finally {
+      setSaving(false)
     }
   }
-  const del = (w: Warehouse) => {
+
+  const del = async (w: Warehouse) => {
     if (moves.some((m) => m.warehouseId === w.id) || dispatches.some((d) => d.warehouseId === w.id)) return toast('This warehouse has stock movements and cannot be deleted.', 'error')
-    if (confirmAction(`Delete ${w.name}?`)) reportSave(remove('warehouses', w.id), 'Deleted')
+    if (!confirmAction(`Delete ${w.name}?`)) return
+
+    try {
+      const ok = await removeAsync('warehouses', w.id)
+      if (ok) {
+        toast('Warehouse deleted from database!', 'success')
+      } else {
+        toast('Deleted locally, but database delete failed.', 'error')
+      }
+    } catch (e: any) {
+      toast(`Delete error: ${e?.message || 'Unknown error'}`, 'error')
+    }
   }
 
   return (
@@ -407,8 +494,9 @@ function WarehouseTab() {
               <button type="button" className="secondary-btn" onClick={() => setEdit(null)}>
                 Cancel
               </button>
-              <button type="submit" className="primary-btn">
-                <Save className="w-4 h-4" /> Save
+              <button type="submit" className="primary-btn" disabled={saving}>
+                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                {saving ? 'Saving...' : 'Save'}
               </button>
             </>
           }
@@ -456,36 +544,107 @@ function ItemsTab() {
   const user = useUserName()
   const [editItem, setEditItem] = useState<ItemRow | null>(null)
   const [editBom, setEditBom] = useState<BomTemplate | null>(null)
+  const [saving, setSaving] = useState(false)
 
-  const loadSuggested = () => {
+  const loadSuggested = async () => {
     const existing = new Set(items.map((i) => i.code))
     const add = SUGGESTED_ITEMS.filter((i) => !existing.has(i.code))
     if (!add.length) return toast('All standard items already exist', 'info')
-    let ok = true
-    add.forEach((i) => (ok = ok && upsert('items', { ...i, id: i.code })))
-    if (reportSave(ok, `${add.length} standard items added — review names and units`)) logActivity(user, 'Settings', 'items', `Loaded ${add.length} standard items`)
+
+    setSaving(true)
+    try {
+      const newItems = add.map((i) => ({ ...i, id: i.code }))
+      upsertMany('items', newItems)
+      const ok = await upsertManyRecords('items', newItems)
+      if (ok) {
+        toast(`${add.length} standard items added and saved to database!`, 'success')
+        logActivity(user, 'Settings', 'items', `Loaded ${add.length} standard items`)
+      } else {
+        toast(`${add.length} standard items added locally, but database save failed.`, 'error')
+      }
+    } catch (e: any) {
+      toast(`Error loading standard items: ${e?.message || 'Unknown error'}`, 'error')
+    } finally {
+      setSaving(false)
+    }
   }
 
-  const saveItem = (i: ItemRow) => {
+  const saveItem = async (i: ItemRow) => {
     const code = i.code.trim().toUpperCase()
     if (!code || !i.name.trim() || !i.unit.trim()) return toast('Code, name and unit are required', 'error')
     if (!i.id && items.some((x) => x.code === code)) return toast('Item code already exists', 'error')
-    if (reportSave(upsert('items', { ...i, code, id: code }), `${code} saved`)) setEditItem(null)
+
+    setSaving(true)
+    try {
+      const itemRecord = { ...i, code, id: code }
+      const ok = await upsertAsync('items', itemRecord)
+      if (ok) {
+        toast(`${code} saved to database!`, 'success')
+        setEditItem(null)
+      } else {
+        toast(`${code} saved locally, but database save failed.`, 'error')
+        setEditItem(null)
+      }
+    } catch (e: any) {
+      toast(`Save error: ${e?.message || 'Unknown error'}`, 'error')
+    } finally {
+      setSaving(false)
+    }
   }
-  const delItem = (i: ItemRow) => {
+
+  const delItem = async (i: ItemRow) => {
     if (moves.some((m) => m.itemCode === i.code) || boms.some((b) => b.lines.some((l) => l.itemCode === i.code))) return toast('Item is used in stock or a BOM template', 'error')
-    if (confirmAction(`Delete ${i.code}?`)) reportSave(remove('items', i.id), 'Deleted')
+    if (!confirmAction(`Delete ${i.code}?`)) return
+
+    try {
+      const ok = await removeAsync('items', i.code || i.id)
+      if (ok) {
+        toast(`${i.code} deleted from database!`, 'success')
+      } else {
+        toast(`Deleted locally, but database delete failed.`, 'error')
+      }
+    } catch (e: any) {
+      toast(`Delete error: ${e?.message || 'Unknown error'}`, 'error')
+    }
   }
-  const saveBom = (b: BomTemplate) => {
+
+  const saveBom = async (b: BomTemplate) => {
     if (!(b.kw > 0)) return toast('kW must be greater than 0', 'error')
     if (boms.some((x) => x.id !== b.id && x.kw === b.kw)) return toast(`A template for ${b.kw} kW already exists`, 'error')
     const lines = b.lines.filter((l) => l.itemCode && l.qty > 0)
     if (!lines.length) return toast('Add at least one item line with quantity', 'error')
     if (new Set(lines.map((l) => l.itemCode)).size !== lines.length) return toast('Each item can appear once per template', 'error')
     const saved = { ...b, lines, id: b.id || newId('BOM') }
-    if (reportSave(upsert('bomTemplates', saved), `BOM template for ${b.kw} kW saved`)) {
-      logActivity(user, 'Settings', saved.id, `BOM template ${b.kw} kW saved`)
-      setEditBom(null)
+
+    setSaving(true)
+    try {
+      const ok = await upsertAsync('bomTemplates', saved)
+      if (ok) {
+        toast(`BOM template for ${b.kw} kW saved to database!`, 'success')
+        logActivity(user, 'Settings', saved.id, `BOM template ${b.kw} kW saved`)
+        setEditBom(null)
+      } else {
+        toast(`BOM template saved locally, but database save failed.`, 'error')
+        setEditBom(null)
+      }
+    } catch (e: any) {
+      toast(`Save error: ${e?.message || 'Unknown error'}`, 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const delBom = async (b: BomTemplate) => {
+    if (!confirmAction(`Delete ${b.kw} kW template?`)) return
+    try {
+      const ok = await removeAsync('bomTemplates', b.id)
+      if (ok) {
+        toast('BOM template deleted from database!', 'success')
+      } else {
+        toast('Deleted locally, but database delete failed.', 'error')
+      }
+    } catch (e: any) {
+      toast(`Delete error: ${e?.message || 'Unknown error'}`, 'error')
     }
   }
 
@@ -589,7 +748,7 @@ function ItemsTab() {
                           <button type="button" className="action-icon-btn" onClick={() => setEditBom(b)} title="Edit">
                             <Pencil className="w-3.5 h-3.5" />
                           </button>
-                          <button type="button" className="action-icon-btn danger" onClick={() => confirmAction(`Delete ${b.kw} kW template?`) && reportSave(remove('bomTemplates', b.id), 'Deleted')} title="Delete">
+                          <button type="button" className="action-icon-btn danger" onClick={() => delBom(b)} title="Delete">
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         </div>
@@ -613,8 +772,9 @@ function ItemsTab() {
               <button type="button" className="secondary-btn" onClick={() => setEditItem(null)}>
                 Cancel
               </button>
-              <button type="submit" className="primary-btn">
-                <Save className="w-4 h-4" /> Save
+              <button type="submit" className="primary-btn" disabled={saving}>
+                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                {saving ? 'Saving...' : 'Save'}
               </button>
             </>
           }
@@ -672,21 +832,35 @@ function DataTab() {
   const user = useUserName()
   const [kb, setKb] = useState(0)
   const [syncing, setSyncing] = useState(false)
+  const [pulling, setPulling] = useState(false)
   useEffect(() => setKb(storageUsageKb()), [])
 
   const pushToSupabase = async () => {
     setSyncing(true)
     try {
-      await syncWithSupabase()
-      const contracts = JSON.parse(localStorage.getItem('surya-setu-contracts') || '[]')
-      for (const c of contracts) {
-        await saveContract(c)
+      const res = await pushAllLocalDataToSupabase()
+      if (res.success) {
+        toast(`Supabase sync complete! ${res.details}`, 'success')
+      } else {
+        toast(`Sync completed with some warnings: ${res.details}`, 'error')
       }
-      toast('Supabase sync complete! All records are synchronized with database.', 'success')
     } catch (e: any) {
       toast(`Sync failed: ${e?.message || 'Unknown error'}`, 'error')
     } finally {
       setSyncing(false)
+    }
+  }
+
+  const pullFromSupabase = async () => {
+    setPulling(true)
+    try {
+      await syncWithSupabase(true)
+      toast('Latest data pulled from Supabase database successfully!', 'success')
+      setKb(storageUsageKb())
+    } catch (e: any) {
+      toast(`Pull failed: ${e?.message || 'Unknown error'}`, 'error')
+    } finally {
+      setPulling(false)
     }
   }
 
@@ -736,17 +910,26 @@ function DataTab() {
       </NoteBanner>
       <FormSection title="Supabase Database & Cloud Storage" icon={Database}>
         <p style={{ fontSize: 12 }}>
-          Your system is configured to save all lots, beneficiaries, work orders, purchase orders, dispatches, dockets, payments, CMC visits, and uploaded files to Supabase.
+          Your system is configured to save all settings (rate card, SLAs, areas), installation partners, warehouses, items & BOM, lots, beneficiaries, work orders, purchase orders, dispatches, dockets, payments, CMC visits, and uploaded files to Supabase.
         </p>
         <div className="row" style={{ marginTop: 10 }}>
           <button
             type="button"
             className="primary-btn"
-            disabled={syncing}
+            disabled={syncing || pulling}
             onClick={pushToSupabase}
           >
-            <CloudUpload className="w-4 h-4" />
-            {syncing ? 'Synchronizing with Supabase...' : 'Synchronize Local Data to Supabase'}
+            {syncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <CloudUpload className="w-4 h-4" />}
+            {syncing ? 'Pushing to Supabase...' : 'Push All Local Data to Supabase'}
+          </button>
+          <button
+            type="button"
+            className="outline-btn"
+            disabled={syncing || pulling}
+            onClick={pullFromSupabase}
+          >
+            {pulling ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+            {pulling ? 'Pulling from Supabase...' : 'Pull Latest from Supabase'}
           </button>
         </div>
       </FormSection>

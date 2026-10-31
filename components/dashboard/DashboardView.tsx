@@ -202,7 +202,7 @@ export function DashboardView() {
             <span className="live-dot" />
             Control Room Overview
           </span>
-          <h1>Executive Dashboard</h1>
+          <h1>Dashboard(Urban Local Bodies)</h1>
           <p>CSPDCL ULA rooftop solar (PM Surya Ghar) — lot execution from allotment to payment and CMC</p>
         </div>
 

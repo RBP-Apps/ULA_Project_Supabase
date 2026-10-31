@@ -13,6 +13,7 @@ import {
   deleteRecord,
   fetchSettings,
   saveSettings as saveSettingsToDb,
+  saveContract,
 } from '../supabase/repository'
 
 const PREFIX = 'surya-setu-ula-'
@@ -147,6 +148,16 @@ export function upsert<T extends { id: string }>(c: CollectionName, record: T): 
   return ok
 }
 
+/** Insert or update by id and await Supabase persistence. */
+export async function upsertAsync<T extends { id: string }>(c: CollectionName, record: T): Promise<boolean> {
+  const all = getAll<T>(c)
+  const exists = all.some((r) => r.id === record.id)
+  const next = exists ? all.map((r) => (r.id === record.id ? record : r)) : [record, ...all]
+  writeKey(COLLECTIONS[c], next)
+
+  return await upsertRecord(c, record)
+}
+
 export function upsertMany<T extends { id: string }>(c: CollectionName, records: T[]): boolean {
   const byId = new Map(getAll<T>(c).map((r) => [r.id, r]))
   const fresh: T[] = []
@@ -225,6 +236,15 @@ export function remove(c: CollectionName, id: string): boolean {
   )
 
   return ok
+}
+
+export async function removeAsync(c: CollectionName, id: string): Promise<boolean> {
+  writeKey(
+    COLLECTIONS[c],
+    getAll<{ id: string }>(c).filter((r) => r.id !== id)
+  )
+
+  return await deleteRecord(c, id)
 }
 
 export function removeWhere<T extends { id: string }>(c: CollectionName, pred: (r: T) => boolean): boolean {
@@ -360,8 +380,9 @@ export function purgeLocalDummyData() {
   }
 }
 
-export async function syncWithSupabase() {
-  if (typeof window === 'undefined' || syncInitiated) return
+export async function syncWithSupabase(force = false) {
+  if (typeof window === 'undefined') return
+  if (syncInitiated && !force) return
   syncInitiated = true
 
   // 1. Fetch & sync Settings
@@ -379,8 +400,8 @@ export async function syncWithSupabase() {
   for (const c of collectionKeys) {
     try {
       const remoteRecords = await fetchCollection<{ id: string }>(c)
-      // Supabase is authoritative: mirror database records in state
-      if (Array.isArray(remoteRecords)) {
+      // Supabase is authoritative: mirror database records in state if non-empty
+      if (Array.isArray(remoteRecords) && remoteRecords.length > 0) {
         writeKey(COLLECTIONS[c], remoteRecords)
       }
     } catch (err) {
@@ -389,6 +410,60 @@ export async function syncWithSupabase() {
   }
 
   emit()
+}
+
+/** Push all local data (settings, 20 collections, and contracts) up to Supabase PostgreSQL Database */
+export async function pushAllLocalDataToSupabase(): Promise<{ success: boolean; details: string }> {
+  if (typeof window === 'undefined') return { success: false, details: 'Window not available' }
+
+  let savedCount = 0
+  let failedCount = 0
+
+  // 1. Settings
+  try {
+    const s = readKey<any>('settings', null)
+    if (s && typeof s === 'object') {
+      const ok = await saveSettingsToDb(s)
+      if (ok) savedCount++
+      else failedCount++
+    }
+  } catch (err) {
+    failedCount++
+    console.error('Push settings error:', err)
+  }
+
+  // 2. All Collections
+  const collectionKeys = Object.keys(COLLECTIONS) as CollectionName[]
+  for (const c of collectionKeys) {
+    try {
+      const items = getAll<{ id: string }>(c)
+      if (items.length > 0) {
+        const ok = await upsertManyRecords(c, items)
+        if (ok) savedCount += items.length
+        else failedCount += items.length
+      }
+    } catch (err) {
+      console.error(`Push collection error for ${c}:`, err)
+      failedCount++
+    }
+  }
+
+  // 3. Contracts
+  try {
+    const contracts = JSON.parse(localStorage.getItem('surya-setu-contracts') || '[]')
+    for (const c of contracts) {
+      const ok = await saveContract(c)
+      if (ok) savedCount++
+      else failedCount++
+    }
+  } catch (err) {
+    console.error('Push contracts error:', err)
+  }
+
+  return {
+    success: failedCount === 0,
+    details: `${savedCount} records pushed to Supabase${failedCount > 0 ? ` (${failedCount} failed)` : ''}`,
+  }
 }
 
 // Trigger initial sync and purge on client mount
