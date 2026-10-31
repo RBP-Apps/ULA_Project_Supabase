@@ -29,6 +29,34 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
   }, [pathname])
 
+  // Automatically label table cells for responsive mobile and tablet card views
+  useEffect(() => {
+    const updateTableLabels = () => {
+      const tables = document.querySelectorAll('.table-wrap table, .table-scroll table, table')
+      tables.forEach((table) => {
+        if (table.classList.contains('no-card-view')) return
+        const headerThs = table.querySelectorAll('thead th')
+        if (headerThs.length === 0) return
+        const headers = Array.from(headerThs).map((th) => th.textContent?.trim() || '')
+        const rows = table.querySelectorAll('tbody tr')
+        rows.forEach((tr) => {
+          const cells = tr.querySelectorAll('td')
+          cells.forEach((td, idx) => {
+            const h = headers[idx]
+            if (h && td.getAttribute('data-label') !== h) {
+              td.setAttribute('data-label', h)
+            }
+          })
+        })
+      })
+    }
+
+    updateTableLabels()
+    const observer = new MutationObserver(updateTableLabels)
+    observer.observe(document.body, { childList: true, subtree: true })
+    return () => observer.disconnect()
+  }, [pathname])
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-[#f4f7f9]">
